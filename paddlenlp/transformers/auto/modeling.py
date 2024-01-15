@@ -270,6 +270,18 @@ class _BaseAutoModelClass:
 
     @classmethod
     def _from_pretrained(cls, pretrained_model_name_or_path, task=None, *model_args, **kwargs):
+        """ Annot:
+        基本功能:
+            加载模型到内存的基础工具方法,通过传入模型名称或路径选择模型类,再根据config配置模型和加载权重
+            模型配置来源:
+                - 本地文件
+                - 已经在框架中支持(注册)的预训练模型
+                - 从HF/AIStudio下载模型
+                - 从指定的URL下载模型?
+        关注方向:
+            - 各模型类的具体配置加载逻辑
+            - 各模型初始化方式(权重加载的细节和设计)
+        """
         if task:
             if cls._task_choice:
                 cls._name_mapping = get_name_mapping(task)
@@ -311,7 +323,7 @@ class _BaseAutoModelClass:
                     if pattern == pretrained_model_name_or_path:
                         init_class = cls._name_mapping[model_name + "_Import_Class"]
                         class_name = cls._name_mapping[init_class]
-                        import_class = importlib.import_module(f"paddlenlp.transformers.{class_name}.modeling")
+                        import_class = importlib.import_module(f"paddlenlp.transformers.{class_name}.modeling")  # annot: 加载预训练类的基本方式就是维护name_space并通过importlib中的各种方法加载类
                         try:
                             model_class = getattr(import_class, init_class)
                         except AttributeError as err:

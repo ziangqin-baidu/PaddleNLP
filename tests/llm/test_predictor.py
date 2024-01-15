@@ -57,7 +57,7 @@ class PredictorTest(LLMTest, unittest.TestCase):
         AutoTokenizer.from_pretrained(self.model_name_or_path).save_pretrained(self.output_dir)
 
     def test_predictor(self):
-        self.run_predictor({"inference_model": True})
+        self.run_predictor({"inference_model": True})  # annot: 1-0 注意inference_model对模型推理的影响和不同推理模式的实现方式
         result_0 = self._read_result(os.path.join(self.output_dir, "predict.json"))
         self.run_predictor({"inference_model": False})
         result_1 = self._read_result(os.path.join(self.output_dir, "predict.json"))

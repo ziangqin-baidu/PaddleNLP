@@ -67,10 +67,10 @@ class LLMTest:
         predict_config["model_name_or_path"] = self.output_dir
         predict_config.update(config_params)
 
-        with argv_context_guard(predict_config):
-            from predictor import predict
+        with argv_context_guard(predict_config):  # annot: 1-0 inference_model参数通过argv_context_guard方法被传入环境变量
+            from predictor import predict  # annot: 这种方法调用的方式也很有意思,指定特定的重名方法
 
-            predict()
+            predict()  # annot: 调用predictor.py中的predict方法,创建predictor时选择XXForCausalModel或者XXForCausalLMInferenceModel
 
         # prefix_tuning dynamic graph do not support to_static
         if not predict_config["inference_model"]:
