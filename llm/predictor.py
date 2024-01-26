@@ -647,9 +647,11 @@ class StaticInferencePredictor(InferencePredictorMixin, BasePredictor):
         config = paddle.inference.Config(infer_model_path + ".pdmodel", infer_model_path + ".pdiparams")
 
         config.switch_ir_optim(True)
+        import pdb; pdb.set_trace()
         # remove `gpu_cpu_map_matmul_v2_to_matmul_pass` to avoid mapping matmul_v2 -> matmul op
         if predictor_args.dtype == "bfloat16":
             config.delete_pass("gpu_cpu_map_matmul_v2_to_matmul_pass")
+            config.switch_ir_optim(False)
 
         device_id = int(os.environ.get("FLAGS_selected_gpus", 0))
         config.enable_use_gpu(100, device_id)
@@ -1493,6 +1495,8 @@ def create_predictor(
                 )
             else:
                 raise ValueError("the `model type` should be one of [llama, chatglm, bloom, gpt, qwen]")
+            
+            import pdb; pdb.set_trace()
             if predictor_args.block_attn:
                 predictor = StaticBlockInferencePredictor(predictor_args, cache_kvs_shape, tokenizer=tokenizer)
             else:
