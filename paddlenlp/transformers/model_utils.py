@@ -320,6 +320,10 @@ def load_state_dict(
     """
     Reads a PaddlePaddle checkpoint file, returning properly formatted errors if they arise.
     """
+
+    import pdb;
+    pdb.set_trace()
+
     if tensor_parallel_split_mapping is None:
         tensor_parallel_split_mapping = {}
 
@@ -339,6 +343,9 @@ def load_state_dict(
             raise ValueError("Currently unsupport paddle weights file, use numpy instead.")
         if metadata.get("format", "np") == "np":
             state_dict = {}
+
+            # annot: 扫描每个参数并应用过滤&TP转换,PP没有在这里体现
+
             with safe_open(checkpoint_file, framework="np") as f:
                 for key in f.keys():
                     if fliter_dict_keys is not None and key not in fliter_dict_keys:
@@ -2071,6 +2078,12 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 # Load from local directory path
                 model = BertForSequenceClassification.from_pretrained('./my_bert/')
         """
+
+        import pdb;
+        pdb.set_trace()
+
+        # annot: 获得基础参数 <-------------
+
         config = kwargs.pop("config", None)
         state_dict = kwargs.pop("state_dict", None)
         cache_dir = kwargs.pop("cache_dir", None)
@@ -2093,6 +2106,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
 
         model_kwargs = kwargs
 
+        # annot: 调整基础参数,引导代码执行 <-------------
+
         # from_hf_hub defalut enable convert_from_torch
         if from_hf_hub and convert_from_torch is None:
             logger.warning(
@@ -2103,6 +2118,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         # convert_from_torch defalut is False
         if convert_from_torch is None:
             convert_from_torch = False
+
+        # annot: 构造和调整模型参数对象 <-------------
 
         cache_dir = resolve_cache_dir(from_hf_hub, from_aistudio, cache_dir)
         # 1. get the PretrainedConfig to init model
@@ -2165,6 +2182,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         keep_in_fp32_modules = None
         use_keep_in_fp32_modules = False
 
+        # annot: ready模型参数 <-------------
+
         # resolve model_weight file
         resolved_archive_file, resolved_sharded_files, sharded_metadata, is_sharded = cls._resolve_model_file_path(
             pretrained_model_name_or_path,
@@ -2198,6 +2217,11 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             else:
                 raise ValueError(f"Unexpected file: {resolved_archive_file} for weight conversion.")
             # load pt weights early so that we know which dtype to init the model under
+
+        # annot: 加载模型参数 <-------------
+        # annot: tp[pdparam, safetensors], normal, shard
+
+        pdb.set_trace()
 
         if not is_sharded and state_dict is None:
             # 4. loading non-sharded ckpt from the state dict
