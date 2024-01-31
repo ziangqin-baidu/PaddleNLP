@@ -67,7 +67,7 @@ from paddlenlp.utils.log import logger
 from ..generation import GenerationConfig, GenerationMixin
 from ..utils import device_guard
 from .configuration_utils import PretrainedConfig
-from .conversion_utils import ConversionMixin
+from .conversion_utils import ConversionMixin, naive_merged_qkv_to_tensor_parallel_qkv
 from .utils import (  # convert_ndarray_dtype,
     ContextManagers,
     InitTrackerMeta,
@@ -315,14 +315,18 @@ def get_parameter_dtype(parameter: nn.Layer) -> paddle.dtype:
 
 
 def load_state_dict(
-    checkpoint_file: Union[str, os.PathLike], tensor_parallel_split_mapping=None, fliter_dict_keys=None
+    checkpoint_file: Union[str, os.PathLike],
+    tensor_parallel_split_mapping=None,
+    fliter_dict_keys=None,
+    force_param_fuse=False,
 ):
     """
     Reads a PaddlePaddle checkpoint file, returning properly formatted errors if they arise.
     """
 
-    import pdb;
-    pdb.set_trace()
+    import pdb
+
+    pdb.set_trace()  # load_state_dict 开始位置,读取模型参数
 
     if tensor_parallel_split_mapping is None:
         tensor_parallel_split_mapping = {}
@@ -357,6 +361,7 @@ def load_state_dict(
                         weight = py_safe_slice_[:]
                     state_dict[key] = weight
 
+            # annot: 转换为paddle-Tensor格式
             for k in list(state_dict.keys()):
                 with device_guard():
                     state_dict[k] = paddle.Tensor(state_dict.pop(k), zero_copy=True)
@@ -1729,6 +1734,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         Returns:
             Tuple[List[str]]: _description_
         """
+
         is_safetensors = False
 
         model_state_dict = model.state_dict()
@@ -1866,7 +1872,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             # To avoid recursive import temporarily.
             import paddlenlp.ops.fast_transformer.transformer.decoding as ft_decoding
 
-            state_dict = ft_decoding.get_ft_para_conf().fit_partial_model(model_to_load, state_dict)
+            state_dict = ft_decoding.get_ft_para_conf().fit_partial_model(model_to_load, state_dict)  ## annot: 无任何操作
 
             mismatched_keys = _find_mismatched_keys(
                 state_dict,
@@ -1889,6 +1895,10 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                     keep_in_fp32_modules=keep_in_fp32_modules,
                 )
             else:
+                
+                import pdb;
+                pdb.set_trace()  # 加载读取的模型参数到模型中
+
                 error_msgs = _load_state_dict_into_model(model_to_load, state_dict, start_prefix)
         else:
             # Sharded checkpoint or whole but low_cpu_mem_usage==True
@@ -2079,8 +2089,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 model = BertForSequenceClassification.from_pretrained('./my_bert/')
         """
 
-        import pdb;
-        pdb.set_trace()
+        import pdb
+        pdb.set_trace()  # from_pretrained 起始位置
 
         # annot: 获得基础参数 <-------------
 
@@ -2184,6 +2194,13 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
 
         # annot: ready模型参数 <-------------
 
+        # debug: 强制融合qkv参数,影响模型计算图构建
+        import pdb
+        pdb.set_trace()  # 修改qkv融合配置,框架代码
+        force_param_fuse = True
+        if force_param_fuse:
+            config.fuse_attention_qkv = True
+
         # resolve model_weight file
         resolved_archive_file, resolved_sharded_files, sharded_metadata, is_sharded = cls._resolve_model_file_path(
             pretrained_model_name_or_path,
@@ -2196,6 +2213,9 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             use_safetensors=use_safetensors,
             variant=variant,
         )
+
+        # annot: 加载模型参数 <-------------
+        # annot: hf, tp[pdparam, safetensors], normal, shard
 
         if convert_from_torch and state_dict is None:
             if (
@@ -2218,11 +2238,6 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 raise ValueError(f"Unexpected file: {resolved_archive_file} for weight conversion.")
             # load pt weights early so that we know which dtype to init the model under
 
-        # annot: 加载模型参数 <-------------
-        # annot: tp[pdparam, safetensors], normal, shard
-
-        pdb.set_trace()
-
         if not is_sharded and state_dict is None:
             # 4. loading non-sharded ckpt from the state dict
             if config.tensor_parallel_degree > 1 and resolved_archive_file.endswith("model_state.pdparams"):
@@ -2233,9 +2248,38 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 tp_actions = cls.get_tensor_parallel_convert_actions(config, loaded_keys)
                 state_dict = load_state_dict(resolved_archive_file, tp_actions)
             else:
-                state_dict = load_state_dict(resolved_archive_file)
+                state_dict = load_state_dict(resolved_archive_file)  # annot: vanilla入口
 
             logger.info("Loaded weights file from disk, setting weights to model.")
+        
+        # debug: accelerate computation by changing qkv and ffn weight shape
+        # design: 修改框架,需要适配不同的模型, 提供配置接口
+        # design: 1) force_fuse(维护); 2) 参数名(适配机制); 3) 不同模型的参数转换中的实际问题(适配/debug)
+        import pdb; pdb.set_trace()
+        # @PretrainedModel.from_pretrained,统一fuse数据
+        origin_weight_fused = len([1 for w_name in state_dict.keys() if re.search(".*qkv.*|c_attn", w_name) is not None]) > 0  # todo: update this logic
+        if force_param_fuse and not origin_weight_fused:
+            # check
+            qkv_weight_pattern = re.compile(r".+layers.0\..+?attn.+q_proj.weight+")  # design: 适配不同模型,用户提供自定义pattern,top-one能召回所有{layer_id}_q_proj.weight
+            q_proj_name_list = list(filter(lambda x: qkv_weight_pattern.match(x) != None, list(state_dict.keys())))
+            if len(q_proj_name_list) < 1:
+                raise ValueError("Can't find q_proj weight in state dict.")
+            for layer_id in range(config.num_attention_heads):
+                q_weight_pattern = re.compile(rf".+layers.{layer_id}\..+?attn.+q_proj.weight+")  # design: 适配不同模型
+                k_weight_pattern = re.compile(rf".+layers.{layer_id}\..+?attn.+k_proj.weight+")
+                v_weight_pattern = re.compile(rf".+layers.{layer_id}\..+?attn.+v_proj.weight+")
+                q_proj_name = list(filter(lambda x: q_weight_pattern.match(x) != None, list(state_dict.keys())))[0]
+                q_proj_weight = state_dict[q_proj_name]  # ndarray
+                k_proj_name = list(filter(lambda x: k_weight_pattern.match(x) != None, list(state_dict.keys())))[0]
+                k_proj_weight = state_dict[k_proj_name]
+                v_proj_name = list(filter(lambda x: v_weight_pattern.match(x) != None, list(state_dict.keys())))[0]
+                v_proj_weight = state_dict[v_proj_name]
+                naive_merged_qkv = np.concatenate((q_proj_weight, k_proj_weight, v_proj_weight), axis=-1)  # design: 适配不同QKV参数融合方式
+                tensor_parallel_qkv = naive_merged_qkv_to_tensor_parallel_qkv(naive_merged_qkv, config.num_attention_heads)
+                state_dict[f"llama.layers.{layer_id}.self_attn.qkv_proj.weight"] = tensor_parallel_qkv
+                del state_dict[q_proj_name]
+                del state_dict[k_proj_name]
+                del state_dict[v_proj_name]
 
         # Check if `_keep_in_fp32_modules` is not None
         use_keep_in_fp32_modules = (cls._keep_in_fp32_modules is not None) and (
@@ -2256,10 +2300,15 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 if not isinstance(state_dict[k], paddle.Tensor):
                     with device_guard():
                         state_dict[k] = paddle.Tensor(state_dict.pop(k), zero_copy=True)
+
+        # annot: 初始化模型 <-------------
+
+        pdb.set_trace()  # 初始化模型
+
         # 3. init the model
         init_args = config["init_args"] or ()
         with ContextManagers(init_contexts):
-            model = cls(config, *init_args, **model_kwargs)
+            model = cls(config, *init_args, **model_kwargs)  # annot: vanilla llama modle initialize <--------modle 
 
         if use_keep_in_fp32_modules:
             # low_cpu_mem_usage = True
@@ -2280,6 +2329,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                     if "quant_weight" in key:
                         quantization_linear_list.append(key[:-13])
 
+        pdb.set_trace()  # 加载模型参数
+        
         model, missing_keys, unexpected_keys, mismatched_keys = cls._load_pretrained_model(
             model=model,
             state_dict=state_dict,

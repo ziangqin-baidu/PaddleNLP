@@ -844,6 +844,23 @@ class LlamaAttention(nn.Layer):
                 key_states = key_states.reshape(shape=target_key_value_shape)
                 value_states = value_states.reshape(shape=target_key_value_shape)
 
+
+        #import pdb;
+        #pdb.set_trace()
+        #print(f"<--------------->\nLlamaAttention\nhidden_states: {hidden_states}\n\nquery_states: {query_states}\n\nkey_states: {key_states}\n\nvalue_states: {value_states}\n\n")
+        #if hasattr(self, "qkv_proj"):
+        #    q_proj_weight, k_proj_weight, v_proj_weight = paddle.split(self.qkv_proj.weight, num_or_sections=3, axis=-1)
+        #    q_states_vanilla, _, _ = paddle.split(self.qkv_proj(hidden_states), num_or_sections=3, axis=-1)
+        #else:
+        #    q_states_vanilla = self.q_proj(hidden_states)
+        #    q_proj_weight = self.q_proj.weight
+        #    k_proj_weight = self.k_proj.weight
+        #    v_proj_weight = self.v_proj.weight
+        #print(f"q_states_vanilla: {q_states_vanilla}\n\n")
+        #print(f"q_proj_weight: {q_proj_weight}\n\n")
+        #print(f"k_proj_weight: {k_proj_weight}\n\n")
+        #print(f"v_proj_weight: {v_proj_weight}\n\n")
+
         kv_seq_len = key_states.shape[-3]
 
         if past_key_value is not None:
