@@ -812,6 +812,9 @@ class LlamaAttention(nn.Layer):
         """Input shape: Batch x Time x Channel"""
         # [bs, seq_len, num_head * head_dim] -> [seq_len / n, bs, num_head * head_dim] (n is model parallelism)
 
+        # # debug: test generation
+        # import pdb; pdb.set_trace()
+
         if self.fuse_attention_qkv:
             mix_layer = self.qkv_proj(hidden_states)
             # NOTE for GQA attention fusion (compatible with MHA and MQA):

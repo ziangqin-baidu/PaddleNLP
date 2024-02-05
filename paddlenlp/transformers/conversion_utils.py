@@ -488,6 +488,21 @@ def splited_qkv_to_tensor_parallel_qkv(weight_list, num_attention_heads):
     weight = np.concatenate(weight_list, axis=-1)
     return naive_merged_qkv_to_tensor_parallel_qkv(weight)
 
+def merged_as_tensor_parallel_qkv(state_dict, q_name, k_name, v_name, num_hidden_layers):
+    q = state_dict[q_name]
+    k = state_dict[k_name]
+    v = state_dict[v_name]
+
+    naive_merged_qkv = np.concatenate((q, k, v), axis=-1)
+    
+    return naive_merged_qkv_to_tensor_parallel_qkv(naive_merged_qkv, num_hidden_layers)
+
+def merge_as_naive_merged_qkv():
+    pass
+
+def merge_as_splited_qkv():
+    pass
+
 
 def get_tensor_parallel_merge_func(tensor_parallel_degree, tensor_parallel_rank, num_attention_heads=None):
     def fn(

@@ -67,7 +67,7 @@ from paddlenlp.utils.log import logger
 from ..generation import GenerationConfig, GenerationMixin
 from ..utils import device_guard
 from .configuration_utils import PretrainedConfig
-from .conversion_utils import ConversionMixin
+from .conversion_utils import ConversionMixin, merged_as_tensor_parallel_qkv
 from .utils import (  # convert_ndarray_dtype,
     ContextManagers,
     InitTrackerMeta,
@@ -359,6 +359,25 @@ def load_state_dict(
     state_dict = paddlenlp_load(checkpoint_file, map_location="cpu")
     return state_dict
 
+# debug: 选择待合并的参数
+def user_changed_default_fuse_parameter(config, origin_config):
+    # define attention parameters to fuse
+
+    do_fuse_parameter_list, do_separate_parameter_list = [], []
+
+    # do fuse-parameter action only if user force fuse_attention_qkv/ffn
+    if config.fuse_attention_qkv and not origin_config.fuse_attention_qkv:
+        do_fuse_parameter_list.append("attention_qkv_proj")
+    if config.fuse_attention_ffn and not origin_config.fuse_attention_ffn:
+        do_fuse_parameter_list.append("attention_ffn_proj")
+
+    # do separate-parameter action only if user force fuse_attention_qkv/ffn
+    if not config.fuse_attention_qkv and origin_config.fuse_attention_qkv:
+        do_separate_parameter_list.append("attention_qkv_proj")
+    if not config.fuse_attention_ffn and origin_config.fuse_attention_ffn:
+        do_separate_parameter_list.append("attention_ffn_proj")
+
+    return do_fuse_parameter_list, do_separate_parameter_list
 
 def resolve_weight_file_from_hf_hub(
     repo_id: str, cache_dir: str, convert_from_torch: bool, subfolder=None, use_safetensors=False
@@ -2016,6 +2035,69 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
 
         return model, missing_keys, unexpected_keys, mismatched_keys
 
+    # debug: 融合state_dict中的指定参数
+    def fuse_attention_parameters(self, state_dict, do_fuse_parameter_list):
+        # fuse weight tensor specified by do_fuse_parameter_list
+
+        import pdb; pdb.set_trace()
+
+        if 'llama' in self.config['architectures'][0].lower():
+            num_hidden_layers = self.config["num_hidden_layers"]  # annot: 根据模型种类获取attention数量
+            qkv_fuse_action = merged_as_tensor_parallel_qkv  # annot: 根据模型种类选择融合函数
+            q_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.self_attn.q_proj.weight"    # annot: 根据模型类型指定参数名模板
+            k_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.self_attn.k_proj.weight"  # todo: use state-dict mapping
+            v_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.self_attn.v_proj.weight"
+            fused_qkv_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.self_attn.qkv_proj.weightt"
+            gate_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.mlp.gate_proj.weight"
+            up_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.mlp.up_proj.weight"
+            gate_up_param_name_patt = lambda layer_index:f"llama.layers.{layer_index}.mlp.gate_up_proj.weight"
+        elif 'opt' in self.config['architectures'][0].lower():
+            log.info("qkv fuse for opt model is not supported yet")
+            pass
+        elif 'chatglmv2forcausallm' in self.config['architectures'][0].lower():
+            log.info("qkv fuse for chatglmv2forcausallm model is not supported yet")
+            pass
+        elif 'chatglmforcausallm' in self.config['architectures'][0].lower():
+            log.info("qkv fuse for chatglmforcausallm model is not supported yet")
+            pass
+        elif 'bloom' in self.config['architectures'][0].lower():
+            log.info("qkv fuse for bloom model is not supported yet")
+            pass
+        elif 'gpt' in self.config['architectures'][0].lower():
+            log.info("qkv fuse for gpt model is not supported yet")
+            pass
+        elif 'qwen' in self.config['architectures'][0].lower():
+            log.info("qkv fuse for qwen model is not supported yet")
+            pass
+        else:
+            raise ValueError("the `model type` should be one of [llama, chatglm, bloom, gpt, qwen]")
+        
+        name_map = self._get_name_mappings(self.config)
+        
+        for layer_index in range(num_hidden_layers):
+            if "attention_qkv_proj" in do_fuse_parameter_list:
+                q_param_name = q_param_name_patt(layer_index)
+                k_param_name = k_param_name_patt(layer_index)
+                v_param_name = v_param_name_patt(layer_index)
+                fused_qkv_param_name = fused_qkv_param_name_patt(layer_index)
+                fused_qkv_param = qkv_fuse_action(state_dict, q_param_name, k_param_name, v_param_name, num_hidden_layers)
+                state_dict[fused_qkv_param_name] = fused_qkv_param
+                del state_dict[q_param_name]
+                del state_dict[k_param_name]
+                del state_dict[v_param_name]
+            if "attention_ffn_proj" in do_fuse_parameter_list:
+                pass  # todo: implement parameter fuse for ffn
+        
+        # will only support load paddle.Tensor to model.
+        if state_dict is not None:
+            for k in list(state_dict.keys()):
+                if not isinstance(state_dict[k], paddle.Tensor):
+                    with device_guard():
+                        state_dict[k] = paddle.Tensor(state_dict.pop(k), zero_copy=True)
+
+        return state_dict
+
+
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
         """
@@ -2255,6 +2337,22 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 for key in model.state_dict().keys():
                     if "quant_weight" in key:
                         quantization_linear_list.append(key[:-13])
+
+        # debug: 判断和执行参数融合动作
+        # 5. apply parameter fuse strategy
+        origin_config, origin_model_kwargs = cls.config_class.from_pretrained(
+                config_path,
+                cache_dir=cache_dir,
+                from_hf_hub=from_hf_hub,
+                from_aistudio=from_aistudio,
+                subfolder=subfolder,
+                return_unused_kwargs=True,
+        )
+        import pdb; pdb.set_trace()
+        do_fuse_parameter_list, do_separate_parameter_list = user_changed_default_fuse_parameter(model.config, origin_config)
+        state_dict = model.fuse_attention_parameters(state_dict, do_fuse_parameter_list)  # CovnersionMixin(conversion_utils.py)中的通用fuse_attention_qkv/ffn模板
+
+        pdb.set_trace()
 
         model, missing_keys, unexpected_keys, mismatched_keys = cls._load_pretrained_model(
             model=model,
