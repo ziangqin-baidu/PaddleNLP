@@ -812,9 +812,6 @@ class LlamaAttention(nn.Layer):
         """Input shape: Batch x Time x Channel"""
         # [bs, seq_len, num_head * head_dim] -> [seq_len / n, bs, num_head * head_dim] (n is model parallelism)
 
-        # # debug: test generation
-        # import pdb; pdb.set_trace()
-
         if self.fuse_attention_qkv:
             mix_layer = self.qkv_proj(hidden_states)
             # NOTE for GQA attention fusion (compatible with MHA and MQA):
@@ -1170,6 +1167,11 @@ class LlamaPretrainedModel(PretrainedModel):
     pretrained_resource_files_map = LLAMA_PRETRAINED_RESOURCE_FILES_MAP
     _keys_to_ignore_on_load_unexpected = [r"self_attn.rotary_emb.inv_freq"]
 
+    # @classmethod
+    # def _get_parameter_fuse_action(cls):
+    #     from paddlenlp.transformers.conversion_utils import merged_as_tensor_parallel_qkv
+    #     return merged_as_tensor_parallel_qkv, None
+
     @classmethod
     def _get_name_mappings(cls, config: LlamaConfig) -> list[StateDictNameMapping]:
         mappings: list[StateDictNameMapping] = []
@@ -1182,11 +1184,13 @@ class LlamaPretrainedModel(PretrainedModel):
                 [f"layers.{layer_index}.self_attn.q_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.self_attn.k_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.self_attn.v_proj.weight", None, "transpose"],
+                [f"layers.{layer_index}.self_attn.qkv_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.self_attn.o_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.self_attn.rotary_emb.inv_freq"],
                 [f"layers.{layer_index}.mlp.gate_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.mlp.down_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.mlp.up_proj.weight", None, "transpose"],
+                [f"layers.{layer_index}.mlp.gate_up_proj.weight", None, "transpose"],
                 [f"layers.{layer_index}.input_layernorm.weight"],
                 [f"layers.{layer_index}.post_attention_layernorm.weight"],
             ]
@@ -1258,6 +1262,46 @@ class LlamaPretrainedModel(PretrainedModel):
         mappings = get_tensor_parallel_split_mappings(config.num_hidden_layers)
 
         return mappings
+
+
+    @classmethod
+    def _get_fused_param_mappings(cls):
+        # return parameter fuse utils
+        from paddlenlp.transformers.conversion_utils import merged_as_tensor_parallel_qkv
+        # attention: q,k,v -> qkv, ffn: gate, up -> gate_up
+        mappings = {
+            'fuse_action': [merged_as_tensor_parallel_qkv, None],
+            'split_action': [None, None],
+            'attn_param_names': {
+                'qkv_proj': 'llama.layers.0.self_attn.qkv_proj.weight',
+                'q_proj': 'llama.layers.0.self_attn.q_proj.weight',
+                'k_proj': 'llama.layers.0.self_attn.k_proj.weight',
+                'v_proj': 'llama.layers.0.self_attn.v_proj.weight'
+            },
+            'ffn_param_names': {
+                'gate_up_proj': 'llama.layers.0.mlp.gate_up_proj.weight',
+                'gate_proj': 'llama.layers.0.mlp.gate_proj.weight',
+                'up_proj': 'llama.layers.0.mlp.up_proj.weight'
+            }
+        }
+
+        return mappings
+
+        # # ffn: gate, up -> gate_up
+        # if is_split:
+        #     # qkv-> q,k,v
+        #     # src -> dst:
+        #     mapping = [
+        #         ["layers.0.self_attn.qkv_proj.weight"],  
+        #         ["layers.0.self_attn.q_proj.weight", "layers.0.self_attn.k_proj.weight", "layers.0.self_attn.v_proj.weight"],
+        #         spilt_func=xx,
+        #         ]
+
+        #     mapping.append([
+        #         ["layers.0.mlp.gate_up_fused_proj.weight"],
+        #         ["layers.0.mlp.gate_proj.weight", "layers.0.mlp.up_proj.weight"],
+        #         spilt_func=xx,
+        #     ])
 
     def _init_weights(self, layer):
         """Initialization hook"""
