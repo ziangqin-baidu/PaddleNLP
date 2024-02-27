@@ -1099,14 +1099,17 @@ class ConversionMixin:
         cls, config: PretrainedConfig, loaded_state_dict_keys, is_split=True, ignore_error=False
     ):
         name_action_mappings = cls._get_tensor_parallel_mappings(config, is_split=is_split)
+        # annot: map: name_action_mappings -> loaded_state_dict_keys
+        # annot: 部分name_action_mappings没有找到对应的参数名
         state_keys_map = cls._resolve_prefix_keys(name_action_mappings.keys(), loaded_state_dict_keys, ignore_error)
+        # annot: 将name_action_mappings的key由通用参数名替换为模型实例的参数名
         for k, v in state_keys_map.items():
             name_action_mappings[v] = name_action_mappings.pop(k)
         return name_action_mappings
 
     @classmethod
     def convert_tensor_parallel(
-        cls, weight_file: str, config: PretrainedConfig, state_dict=None, ignore_error=False
+        cls, weight_file: str, config: PretrainedConfig, state_dict=None, ignore_error=False, load_hook_function=None,
     ) -> None:
         """the entry of converting config and converting model file
 
@@ -1114,10 +1117,42 @@ class ConversionMixin:
             weight_file (str | None): the weight file path of `model_state.pdparams` file
             config (PretrainedConfig): the PretrainedConfig instance of model
         """
+        # debug: 短暂恢复config的说明状态, 与state_dict实际状态保持一致
+        origin_fuse_attention_qkv = config.fuse_attention_qkv
+        origin_fuse_attention_ffn = config.fuse_attention_ffn
+        print(f">>>>>>>>>>>>>> 1")
+        print(config.fuse_attention_qkv)
+        name_map_list = cls._get_name_mappings(config)
+        if config.fuse_attention_qkv:
+            for name_map in name_map_list:
+                if name_map.source_name.endswith("layers.0.self_attn.q_proj.weight"):
+                    if name_map.target_name in loaded_keys:
+                        config.fuse_attention_qkv = False
+                        print(f">>>>>>>>>>>>>> 2")
+                    break
+        else:
+            for name_map in name_map_list:
+                if name_map.source_name.endswith("layers.0.self_attn.qkv_proj.weight"):
+                    if name_map.target_name in load_keys:
+                        config.fuse_attention_qkv = True
+                        print(f">>>>>>>>>>>>>> 3")
+                    break
+        if config.fuse_attention_ffn:
+            pass
+        else:
+            pass
+
+        print(f">>>>>>>>>>>>>> 4")
+        print(config)
+
         name_action_mappings = cls._get_tensor_parallel_mappings(config)
+
         if state_dict is None:
             with device_guard("cpu"):
                 state_dict = paddle.load(weight_file, return_numpy=False)
+                # if load_hook_function:
+                #     state_dict = load_hook_function(state_dict)
+
             logger.info("Starting to convert orignal state_dict to tensor parallel state_dict.")
 
         state_keys_map = cls._resolve_prefix_keys(name_action_mappings.keys(), state_dict.keys(), ignore_error)
@@ -1134,6 +1169,12 @@ class ConversionMixin:
             new_tensor = action(tensor)
             with device_guard("cpu"):
                 state_dict[name] = paddle.Tensor(new_tensor, zero_copy=True)
+        
+        # debug: 结束config状态恢复
+        config.fuse_attention_qkv = origin_fuse_attention_qkv
+        config.fuse_attention_ffn = origin_fuse_attention_ffn
+        print(f">>>>>>>>>>>>>> 5")
+        print(config)
 
         return state_dict
 

@@ -323,6 +323,8 @@ def load_state_dict(
     if tensor_parallel_split_mapping is None:
         tensor_parallel_split_mapping = {}
 
+    import pdb; pdb.set_trace()
+
     if checkpoint_file.endswith(".safetensors") and is_safetensors_available():
         # Check format of the archive
         with safe_open(checkpoint_file, framework="np") as f:
@@ -693,7 +695,7 @@ def load_sharded_checkpoint(model, folder, variant=None, strict=True, prefer_saf
     loader = safe_load_file if load_safe else partial(paddlenlp_load, map_location="cpu")
 
     for shard_file in shard_files:
-        state_dict = loader(os.path.join(folder, shard_file))
+        state_dict = loader(os.path.join(folder, shard_file))  # debug: sub-branch sharding
         with warnings.catch_warnings():
             warnings.resetwarnings()
             warnings.filterwarnings("ignore", message=r".*is not found in the provided dict.*")
@@ -1755,11 +1757,15 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         Returns:
             Tuple[List[str]]: _description_
         """
+
+        print(">>>>>>> 9.0.1", state_dict is None)
+
         is_safetensors = False
 
         model_state_dict = model.state_dict()
 
         expected_keys = list(model_state_dict.keys())
+
         prefix = model.base_model_prefix
 
         if len(prefix) > 0:
@@ -1797,7 +1803,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             except ImportError:
                 raise ImportError("Quantization features require `paddlepaddle >= 2.5.2`")
             if state_dict is not None:
-                state_dict = convert_to_quantize_state_dict(
+                state_dict = convert_to_quantize_state_dict(  # debug: sub-branch quantize
                     state_dict,
                     quantization_linear_list,
                     config.quantization_config,
@@ -1885,6 +1891,9 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                         del state_dict[checkpoint_key]
             return mismatched_keys
 
+
+        print(">>>>>>>>>>>> 9.0.2", state_dict is None)
+
         if state_dict is not None:
             # DONT Hold tensor parallel here, only hold afer load state dict.
             # Whole checkpoint
@@ -1892,7 +1901,17 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             # To avoid recursive import temporarily.
             import paddlenlp.ops.fast_transformer.transformer.decoding as ft_decoding
 
-            state_dict = ft_decoding.get_ft_para_conf().fit_partial_model(model_to_load, state_dict)
+            print(">>>>>>>>>>>>>> 9.1")
+            print('llama.layers.0.self_attn.q_proj.weight' in state_dict)
+            print(state_dict['llama.layers.0.self_attn.qkv_proj.weight'])
+            print(state_dict['llama.layers.0.self_attn.qkv_proj.weight'].shape)
+
+            state_dict = ft_decoding.get_ft_para_conf().fit_partial_model(model_to_load, state_dict)  # debug: sub-branch MP
+
+            print(">>>>>>>>>>>>>> 9.2")
+            print('llama.layers.0.self_attn.q_proj.weight' in state_dict)
+            print(state_dict['llama.layers.0.self_attn.qkv_proj.weight'])
+            print(state_dict['llama.layers.0.self_attn.qkv_proj.weight'].shape)
 
             mismatched_keys = _find_mismatched_keys(
                 state_dict,
@@ -1940,13 +1959,13 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                     assert loaded_keys is not None, "loaded_keys is not None."
                     tp_actions = cls.get_tensor_parallel_convert_actions(config, loaded_keys)
                 # Here we use expected_keys to optimize weights loading for pipeline model. Only works for safetensors
-                state_dict = load_state_dict(
+                state_dict = load_state_dict(  # debug: branch-5 load from sharding files
                     shard_file,
                     tp_actions if pre_tensor_parallel_split else None,
                     None if config.quantization_config.is_weight_quantize() else set(expected_keys),
                 )
                 if config.quantization_config.is_weight_quantize():
-                    state_dict = convert_to_quantize_state_dict(
+                    state_dict = convert_to_quantize_state_dict(  # debug: sub-branch quantize
                         state_dict,
                         quantization_linear_list,
                         config.quantization_config,
@@ -1967,7 +1986,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 if config.tensor_parallel_degree > 1 and ".tp" not in shard_file and not pre_tensor_parallel_split:
                     logger.info("Converting state_dict to Tensor Parallel Format")
                     # ignore error for multi shard, since only parts of data
-                    state_dict = cls.convert_tensor_parallel(
+                    state_dict = cls.convert_tensor_parallel(  # debug: sub-branch TP
                         None, config, state_dict=state_dict, ignore_error=len(resolved_archive_file) > 1
                     )
                     logger.info("Converted state_dict to Tensor Parallel Format")
@@ -2260,7 +2279,12 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
 
         # resolve model_weight file
         
-        # pdb.set_trace()
+        # import pdb; pdb.set_trace()
+
+        # 3. init the model
+        init_args = config["init_args"] or ()
+        with ContextManagers(init_contexts):
+            model = cls(config, *init_args, **model_kwargs)
 
         resolved_archive_file, resolved_sharded_files, sharded_metadata, is_sharded = cls._resolve_model_file_path(
             pretrained_model_name_or_path,
@@ -2286,7 +2310,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                     f"Starting to convert pytorch weight file<{resolved_archive_file}> to "
                     f"paddle weight file<{os.path.join(cache_dir, pretrained_model_name_or_path, subfolder, PADDLE_WEIGHTS_NAME)}> ..."
                 )
-                state_dict = cls.convert(  # annot: 转换pt权重为paddle权重  
+                # annot: 转换pt权重为paddle权重    
+                state_dict = cls.convert(  # debug: branch-4 torch
                     resolved_archive_file,
                     config,
                     cache_dir=os.path.join(cache_dir, pretrained_model_name_or_path, subfolder),
@@ -2295,30 +2320,62 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 raise ValueError(f"Unexpected file: {resolved_archive_file} for weight conversion.")
             # load pt weights early so that we know which dtype to init the model under
 
-        # debug: state_dict 加载分支
+
+        # annot: state_dict 加载分支
         if not is_sharded and state_dict is None:
             # 4. loading non-sharded ckpt from the state dict
             if config.tensor_parallel_degree > 1 and resolved_archive_file.endswith("model_state.pdparams"):
-                state_dict = cls.convert_tensor_parallel(resolved_archive_file, config)  # annot: 权重TP转换
+                state_dict = cls.convert_tensor_parallel(resolved_archive_file, config)  # debug: branch-3 pdparams转换 + TP
             elif config.tensor_parallel_degree > 1 and resolved_archive_file.endswith("model.safetensors"):
                 with safe_open(resolved_archive_file, framework="np", device="cpu") as f:
                     loaded_keys = f.keys()
-                
-                import pdb; pdb.set_trace()
+                # debug: 短暂恢复config的说明状态, 与state_dict实际状态保持一致
+                origin_fuse_attention_qkv = config.fuse_attention_qkv
+                origin_fuse_attention_ffn = config.fuse_attention_ffn
+                print(f">>>>>>>>>>>>>> 1")
+                print(config.fuse_attention_qkv)
+                name_map_list = model._get_name_mappings(config)
+                if config.fuse_attention_qkv:
+                    for name_map in name_map_list:
+                        if name_map.source_name.endswith("layers.0.self_attn.q_proj.weight"):
+                            if name_map.target_name in loaded_keys:
+                                config.fuse_attention_qkv = False
+                                print(f">>>>>>>>>>>>>> 2")
+                            break
+                else:
+                    for name_map in name_map_list:
+                        if name_map.source_name.endswith("layers.0.self_attn.qkv_proj.weight"):
+                            if name_map.target_name in load_keys:
+                                config.fuse_attention_qkv = True
+                                print(f">>>>>>>>>>>>>> 3")
+                            break
+                if config.fuse_attention_ffn:
+                    pass
+                else:
+                    pass
+
+                print(f">>>>>>>>>>>>>> 4")
+                print(config)
 
                 tp_actions = cls.get_tensor_parallel_convert_actions(config, loaded_keys)
-                state_dict = load_state_dict(resolved_archive_file, tp_actions)  # annot: 权重TP转换
-            else:
-                state_dict = load_state_dict(resolved_archive_file)
+                state_dict = load_state_dict(resolved_archive_file, tp_actions)  # debug: branch-2 TP
 
+                # debug: 结束config状态恢复
+                config.fuse_attention_qkv = origin_fuse_attention_qkv
+                config.fuse_attention_ffn = origin_fuse_attention_ffn
+                print(f">>>>>>>>>>>>>> 5")
+                print(config)
+                print("state_dict['llama.layers.0.self_attn.q_proj.weight']")
+                # print(state_dict['llama.layers.0.self_attn.q_proj.weight'])
+                print(state_dict['llama.layers.0.self_attn.q_proj.weight'].shape)
+                
+            else:
+                state_dict = load_state_dict(resolved_archive_file)  # debug: branch-1 normal
+        
+       
             logger.info("Loaded weights file from disk, setting weights to model.")
-        
-        import pdb; pdb.set_trace()
-        
-        # 3. init the model
-        init_args = config["init_args"] or ()
-        with ContextManagers(init_contexts):
-            model = cls(config, *init_args, **model_kwargs)
+
+        # import pdb; pdb.set_trace()
 
         # annot: 判断和执行参数融合动作
         # 5. apply parameter fuse strategy
@@ -2332,8 +2389,17 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         )
 
         do_fuse_parameter_list, do_separate_parameter_list = select_fuse_parameter(model, state_dict)  # design: 判断需要融合的参数
+
+        print(f">>>>>>>>>>>>>> 6")
+        print(do_fuse_parameter_list)
+
         if do_fuse_parameter_list:
             state_dict, fuse_success = model.fuse_attention_parameters(state_dict, do_fuse_parameter_list)  # CovnersionMixin(conversion_utils.py)中的通用fuse_attention_qkv/ffn模板
+            print(f">>>>>>>>>>>>>> 7")
+            print('llama.layers.0.self_attn.q_proj.weight' in state_dict)
+            # print(state_dict['llama.layers.0.self_attn.qkv_proj.weight'])
+            print(state_dict['llama.layers.0.self_attn.qkv_proj.weight'].shape)
+            print(state_dict is None)
             # design: 如果参数融合失败，则在融合过程中直接报错, 终止程序运行
             # if not fuse_success:  # fuse parameters fail, ignore user change
             #     roll_back_user_changed_default_fuse_parameter(model.config, origin_config)
@@ -2383,6 +2449,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                     if "quant_weight" in key:
                         quantization_linear_list.append(key[:-13])
 
+        # annot: 加载权重到模型实例, 执行shard,quantize, TP/MP等多种操作
+        print(">>>>>>> 9.0.0", state_dict is None)
         model, missing_keys, unexpected_keys, mismatched_keys = cls._load_pretrained_model(
             model=model,
             state_dict=state_dict,
@@ -2396,6 +2464,13 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
             keep_in_fp32_modules=keep_in_fp32_modules,
             quantization_linear_list=quantization_linear_list,
         )
+
+        # import pdb; pdb.set_trace()
+        print(f">>>>>>>>>>>>>> 8: load tensor into model")
+        print("\n\nmodel.state_dict()['llama.layers.1.self_attn.qkv_proj.weight']")
+        # print(model.state_dict()['llama.layers.1.self_attn.qkv_proj.weight'])
+        print(model.state_dict()['llama.layers.1.self_attn.qkv_proj.weight'].shape)
+        # print("\n\nloaded_state_dict_keys\n", loaded_state_dict_keys)
 
         # load generation_config.json
         if model.can_generate() and pretrained_model_name_or_path is not None:
