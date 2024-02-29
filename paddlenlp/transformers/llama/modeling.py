@@ -15,6 +15,7 @@
 """Paddle Llama model"""
 from __future__ import annotations
 
+import re
 import math
 import warnings
 from functools import partial
@@ -1282,15 +1283,15 @@ class LlamaPretrainedModel(PretrainedModel):
             'fuse_action': [merged_as_tensor_parallel_qkv, None],
             'split_action': [None, None],
             'attn_param_names': {
-                'qkv_proj': 'llama.layers.0.self_attn.qkv_proj.weight',
-                'q_proj': 'llama.layers.0.self_attn.q_proj.weight',
-                'k_proj': 'llama.layers.0.self_attn.k_proj.weight',
-                'v_proj': 'llama.layers.0.self_attn.v_proj.weight'
+                'qkv_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.self_attn.qkv_proj.weight'),
+                'q_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.self_attn.q_proj.weight'),
+                'k_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.self_attn.k_proj.weight'),
+                'v_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.self_attn.v_proj.weight')
             },
             'ffn_param_names': {
-                'gate_up_proj': 'llama.layers.0.mlp.gate_up_proj.weight',
-                'gate_proj': 'llama.layers.0.mlp.gate_proj.weight',
-                'up_proj': 'llama.layers.0.mlp.up_proj.weight'
+                'gate_up_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.mlp.gate_up_proj.weight'),
+                'gate_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.mlp.gate_proj.weight'),
+                'up_proj': lambda layer_id: re.sub(r'\d+', str(layer_id), 'llama.layers.0.mlp.up_proj.weight')
             }
         }
 
