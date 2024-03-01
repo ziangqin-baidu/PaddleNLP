@@ -1075,6 +1075,8 @@ class ConversionMixin:
             logger.warning(f"there are {len(all_layer_names)} tensors not initialized:")
             for layer_name in all_layer_names:
                 logger.warning(f"--- {layer_name}")
+        
+        # debug: qkv_merge
 
         model_weight_file = os.path.join(cache_dir, PADDLE_WEIGHTS_NAME)
         paddle.save(state_dict, model_weight_file)
