@@ -368,9 +368,10 @@ def get_param_name_from_name_mappings(name_patt, name_map_list):
             return name_map.target_name
 
 
-def select_fuse_parameter(model, loaded_keys):
+def select_fuse_parameter(model, loaded_keys, config=None):
     # select target attention parameters for fusing
-    config = model.config
+    if config is None:
+        config = model.config
 
     # determine whether parameter already fused
     fuse_parameter_mappings = model._get_fused_param_mappings()
@@ -2052,13 +2053,14 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
 
         return model, missing_keys, unexpected_keys, mismatched_keys
 
-    def fuse_attention_parameters(self, state_dict, do_fuse_parameter_list):
+    @classmethod
+    def fuse_attention_parameters(cls, state_dict, do_fuse_parameter_list, config):
         # fuse weight tensor specified by do_fuse_parameter_list
 
         # import pdb; pdb.set_trace()
 
         # get target parameter names and fuse method from model
-        fuse_parameter_mappings = self._get_fused_param_mappings()  # design: 放弃自适应参数名定位能力,参数名和方法由模型显式提供
+        fuse_parameter_mappings = cls._get_fused_param_mappings()  # design: 放弃自适应参数名定位能力,参数名和方法由模型显式提供
 
         q_param_name_map = fuse_parameter_mappings["attn_param_names"]['q_proj']
         k_param_name_map = fuse_parameter_mappings["attn_param_names"]['k_proj']
@@ -2068,8 +2070,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
 
         # do fuse action on each attention block, raise error on any failure
         logger.info("Fusing attention parameter")
-        num_hidden_layers = self.config["num_hidden_layers"]
-        num_attention_heads = self.config["num_attention_heads"]
+        num_hidden_layers = config["num_hidden_layers"]
+        num_attention_heads = config["num_attention_heads"]
 
         for layer_index in range(num_hidden_layers):
             if "attention_qkv_proj" in do_fuse_parameter_list:  # todo: 管理融合参数范围([weight, bias])
@@ -2331,7 +2333,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                     sep_qkv_name_mappings = model._get_fused_param_mappings()['attn_param_names']
                     for idx, key in enumerate(loaded_keys):
                         for name_map in (sep_qkv_name_mappings['q_proj'], sep_qkv_name_mappings['k_proj'], sep_qkv_name_mappings['v_proj']):
-                            if re.sub(r'\d+', '0', key) == name_map(0):
+                            if re.sub(r'\d+', '0', key) == name_map(0):  # todo: 命名转换过于繁琐, 考虑重构代码
                                 separate_keys.add(loaded_keys.pop(idx))  # avoid searching q,k,v tp_action when configured as qkv
                                 fused_keys.add(sep_qkv_name_mappings['qkv_proj'](re.search('\d+', key).group(0)))
                 
@@ -2343,7 +2345,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 # apply qkv/gate_up fuse action and tensor-parallel action sequentially
                 print(f"\n\n>>>>>>>>>>>>>> 3: apply qkv/gate_up fuse action and tensor-parallel action sequentially")
                 if 'attention_qkv_proj' in do_fuse_parameter_list:
-                    state_dict, fuse_success = model.fuse_attention_parameters(state_dict, ['attention_qkv_proj'])  # design: q, k, v => qkv
+                    state_dict, fuse_success = cls.fuse_attention_parameters(state_dict, ['attention_qkv_proj'], model.config)  # design: q, k, v => qkv
                     tp_actions = cls.get_tensor_parallel_convert_actions(config, fused_keys, ignore_params=set(state_dict.keys())-fused_keys)  # get tp-action for qkv
                     for qkv_name in tp_actions.keys():
                         state_dict[qkv_name] = tp_actions[qkv_name](state_dict[qkv_name])  # apply tp-action for qkv
@@ -2353,7 +2355,7 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
                 print(f"\n\n>>>>>>>>>>>>>> 1: 融合参数")
                 do_fuse_parameter_list, do_separate_parameter_list = select_fuse_parameter(model, state_dict.keys())  # design: 判断需要融合的参数
                 if do_fuse_parameter_list:
-                    state_dict, fuse_success = model.fuse_attention_parameters(state_dict, do_fuse_parameter_list)
+                    state_dict, fuse_success = model.fuse_attention_parameters(state_dict, do_fuse_parameter_list, model.config)
        
             logger.info("Loaded weights file from disk, setting weights to model.")
 
