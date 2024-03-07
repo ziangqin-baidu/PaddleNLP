@@ -2277,6 +2277,8 @@ class PretrainedModel(Layer, GenerationMixin, ConversionMixin):
         if low_cpu_mem_usage and (model.config.fuse_attention_qkv or model.config.fuse_attention_ffn):
             raise ValueError("'low_cpu_mem_usage' is forbidden when fuse attention qkv or ffn is enabled")  # debug: 显示UnboundLocalError
 
+        import pdb; pdb.set_trace()
+
         resolved_archive_file, resolved_sharded_files, sharded_metadata, is_sharded = cls._resolve_model_file_path(
             pretrained_model_name_or_path,
             cache_dir=cache_dir,
